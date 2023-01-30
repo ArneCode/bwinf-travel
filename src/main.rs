@@ -8,6 +8,7 @@ use std::fmt;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::mem;
+use std::time::Instant;
 use std::{collections::HashMap, f64::consts::PI};
 
 struct Dir(f64, f64);
@@ -119,7 +120,7 @@ impl Set {
         self.curr_hash ^= hasher.finish();
     }
 }
-
+#[derive(Debug)]
 struct Path {
     pts: Vec<usize>,
     len: usize,
@@ -172,11 +173,11 @@ fn held_karp<'a>(points: &'a Vec<Point>, check_angles: bool) -> (f64, Vec<&'a Po
     todo!()
 }
 #[derive(Clone, Debug)]
-struct CostMatrix {
+struct CostList {
     data: Vec<Option<f64>>,
     size: usize,
 }
-impl fmt::Display for CostMatrix {
+impl fmt::Display for CostList {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut i = 0;
         writeln!(f, "")?;
@@ -190,7 +191,7 @@ impl fmt::Display for CostMatrix {
         Ok(())
     }
 }
-impl CostMatrix {
+impl CostList {
     fn new(points: &Vec<Point>) -> Self {
         let size = points.len();
         let mut data = vec![None; size * size];
@@ -198,7 +199,8 @@ impl CostMatrix {
         for y in 0..size {
             for x in 0..size {
                 if x != y {
-                    data[i] = Some(points[x].dist_to(&points[y]));
+                    let dist = points[x].dist_to(&points[y]);
+                    data[i] = Some(dist);
                 }
                 i += 1;
             }
@@ -251,13 +253,13 @@ impl CostMatrix {
         }
         sum
     }
-    fn reduce(&mut self) -> f64 {
+    /*fn reduce(&mut self) -> f64 {
         // println!("reducing matrix, before: {}", self);
         let cost = self.reduce_lines(false) + self.reduce_lines(true);
         // println!("after: {self}, cost: {cost}");
         cost
-    }
-    fn add_path(&self, start: usize, end: usize) -> (f64, CostMatrix) {
+    }*/
+    /*fn add_path(&self, start: usize, end: usize) -> (f64, CostList) {
         // println!("adding path, start: {start}, end: {end}");
         let mut matrix = self.clone();
         //cost: cost from start to end + prev_cost + new reduction cost
@@ -276,20 +278,42 @@ impl CostMatrix {
         matrix.clear_line(end, false);
         //remove the other way round
         matrix.set(start, end, None);
-        let reduce_cost = matrix.reduce();
+        // let reduce_cost = matrix.reduce();
         let cost = move_cost + reduce_cost;
         (cost, matrix)
-    }
+    }*/
 }
 // #[derive(PartialEq)]
+#[derive(Debug)]
 struct Branch {
     cost: f64,
-    matrix: CostMatrix,
     free_pts: Vec<usize>,
     path: Path,
 }
 impl Branch {
-    fn explore(&self, upper_bound: &mut f64) -> Option<Path> {
+    fn calc_lower_bound(&self, costs: &CostList) -> f64 {
+        let mut cost = 0.0;
+        let mut p_pt = &self.path.pts[0];
+        for pt in self.path.pts.iter().skip(1) {
+            if let Some(dist) = costs.get(*p_pt, *pt) {
+                cost += dist;
+            }
+            p_pt = pt;
+        }
+        for pt in &self.free_pts {
+            let mut min = f64::MAX;
+            for other in 0..costs.size {
+                if let Some(dist) = costs.get(*pt, other) {
+                    if dist < &min {
+                        min = *dist;
+                    }
+                }
+            }
+            cost += min;
+        }
+        cost
+    }
+    fn explore(&self, costs: &CostList, upper_bound: &mut f64) -> Option<Path> {
         let last_pt = if let Some(pt) = self.path.pts.last() {
             pt
         } else {
@@ -303,22 +327,24 @@ impl Branch {
             .iter()
             .enumerate()
             .map(|(i, dest)| {
-                let (mut cost, matrix) = self.matrix.add_path(*last_pt, *dest);
+                // let (mut cost, matrix) = self.matrix.add_path(*last_pt, *dest);
                 // cost += self.cost;
                 let mut free_pts = self.free_pts.clone();
                 free_pts.swap_remove(i);
                 let path = self.path.add(*dest);
-                Branch {
-                    cost,
-                    matrix,
+                let mut b = Branch {
+                    cost: 0.0,
                     free_pts,
                     path,
-                }
+                };
+                let cost = b.calc_lower_bound(costs);
+                b.cost = cost;
+                b
             })
             .collect::<Vec<_>>();
         //https://doc.rust-lang.org/std/vec/struct.Vec.html#method.sort_by
         branches.sort_by(|a, b| a.cost.partial_cmp(&b.cost).unwrap());
-        let mut min_path: Option<Path> = None;
+        let mut min_path = None;
         // println!("branches: ");
         let mut prev_cost = branches[0].cost;
         for b in branches {
@@ -332,9 +358,18 @@ impl Branch {
             }
             if b.free_pts.is_empty() {
                 *upper_bound = b.cost;
+                if b.cost == 0.0 {
+                    panic!("weirf, {:#?}", b);
+                }
+                // println!(
+                //     "returning path, self cost: {}, self: {:#?}, costs: {}",
+                //     b.calc_lower_bound(costs),
+                //     b,
+                //     costs
+                // );
                 min_path = Some(b.path);
             } else {
-                let result = b.explore(upper_bound);
+                let result = b.explore(costs, upper_bound);
                 if result.is_some() {
                     min_path = result;
                 }
@@ -344,6 +379,7 @@ impl Branch {
         if min_path.is_none() && upper_bound == &f64::MAX {
             panic!("error, returned");
         }
+
         min_path
     }
 }
@@ -351,22 +387,23 @@ fn branch_and_bound<'a>(points: &'a Vec<Point>) -> Option<(f64, Vec<&'a Point>)>
     let free_pts = (0..points.len()).collect::<Vec<_>>();
     let mut min_len = f64::MAX;
     let mut path = None;
-    let mut matrix = CostMatrix::new(points);
-    let cost = matrix.reduce();
+    let mut matrix = CostList::new(points);
+    // let cost = matrix.reduce();
     for i in 0..points.len() {
         let mut free_pts = free_pts.clone();
         free_pts.swap_remove(i);
-        let root = Branch {
-            cost,
-            matrix: matrix.clone(),
+        let mut root = Branch {
+            cost: 0.0,
             free_pts,
             path: Path {
                 pts: vec![i],
                 len: 1,
             },
         };
+        let cost = root.calc_lower_bound(&matrix);
+        root.cost = cost;
         // println!("start, matrix: {}", root.matrix);
-        if let Some(result) = root.explore(&mut min_len) {
+        if let Some(result) = root.explore(&matrix, &mut min_len) {
             path = Some(result.pts.iter().map(|i| &points[*i]).collect());
         } else if path.is_none() {
             panic!("error for pt nr. {}, upper: {min_len}", i);
@@ -388,9 +425,15 @@ fn draw_path(path: &Vec<&Point>, image: &mut RgbaImage, color: [u8; 4], offset: 
     }
 }
 fn main() {
+    let start = Instant::now();
     let size = 1000.0;
     let mut rng = thread_rng();
-    let points = get_points((size, size), 200, &mut rng);
+    let points = get_points((size, size), 15, &mut rng);
+    // let points = vec![
+    //     Point(100.0, 200.0),
+    //     Point(500.0, 200.0),
+    //     Point(600.0, 300.0),
+    // ];
     println!("Points: {:#?}", points);
     println!("path through permutation: ");
     // let min_path_unchecked = get_shortest_path(&points, false);
@@ -409,11 +452,13 @@ fn main() {
         Rgba([0u8, 0u8, 0u8, 255u8])
     });
     // draw_path(
-    //     &min_path_unchecked.1,
-    //     &mut image,
-    //     [255u8, 0u8, 0u8, 255u8],
-    //     0.0,
+    // &min_path_unchecked.1,
+    // &mut image,
+    // [255u8, 0u8, 0u8, 255u8],
+    // 0.0,
     // );
+    let elapsed = start.elapsed();
+    println!("took: {:?}", elapsed);
     draw_path(&min_path_bnb.1, &mut image, [0u8, 0u8, 255u8, 255u8], size);
     image.save("out.png").unwrap();
     println!("saved image");
