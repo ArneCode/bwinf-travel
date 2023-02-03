@@ -5,6 +5,7 @@ use rand::prelude::*;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::BinaryHeap;
 use std::fmt;
+use std::fs;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::mem;
@@ -23,6 +24,20 @@ fn angle_ok(a: &Dir, b: &Dir) -> bool {
 }
 #[derive(Debug)]
 struct Point(f64, f64);
+impl TryFrom<Vec<&str>> for Point {
+    type Error = std::num::ParseFloatError;
+    fn try_from(value: Vec<&str>) -> Result<Self, Self::Error> {
+        assert!(value.len() == 2, "{:?}", value);
+        let width = value[0].parse()?;
+        let height = value[1].parse()?;
+        if width > height {
+            Ok(Self(width, height))
+        } else {
+            Ok(Self(height, width))
+        }
+    }
+}
+
 impl Point {
     fn dir_to(&self, other: &Point) -> Dir {
         Dir(other.0 - self.0, other.1 - self.1)
@@ -66,7 +81,8 @@ fn path_is_ok(path: &Vec<&Point>) -> bool {
 }
 fn get_shortest_path<'a>(points: &'a Vec<Point>, check_angles: bool) -> (f64, Vec<&'a Point>) {
     let mut min_path = (f64::MAX, vec![]);
-    for combination in points.iter().permutations(points.len()) {
+    for mut combination in points.iter().permutations(points.len()) {
+        // combination.push(combination[0]);
         if check_angles && !path_is_ok(&combination) {
             continue;
         }
@@ -87,8 +103,7 @@ impl AngleOkList {
     }
     fn new(points: &Vec<Point>) -> Self {
         let n_points = points.len();
-        let mut data = Vec::with_capacity(n_points * n_points * n_points);
-        data.fill(false);
+        let mut data = vec![false; n_points * n_points * n_points];
         for (i3, p3) in points.iter().enumerate() {
             for (i2, p2) in points.iter().enumerate() {
                 for (i1, p1) in points.iter().enumerate() {
@@ -123,55 +138,61 @@ impl Set {
 #[derive(Debug)]
 struct Path {
     pts: Vec<usize>,
-    len: usize,
+    hash: u64,
+    prev_hashs: [u64; 2],
 }
 impl Path {
     fn new() -> Self {
         Self {
             pts: vec![],
-            len: 0,
+            hash: 0,
+            prev_hashs: [0, 0],
         }
     }
     fn get_last_two(&self) -> (usize, usize) {
         let len = self.pts.len();
         return (self.pts[len - 2], self.pts[len - 1]);
     }
-    fn add(&self, pt: usize) -> Self {
-        let mut pts = self.pts.clone();
-        pts.push(pt);
-        let len = self.len + 1;
-        Self { pts, len }
+    fn add(&mut self, pt: usize) {
+        self.pts.push(pt);
+        let mut hasher = DefaultHasher::new();
+        pt.hash(&mut hasher);
+        let hash = hasher.finish();
+        self.hash ^= self.prev_hashs[0];
+        self.prev_hashs[0] = self.prev_hashs[1];
+        self.prev_hashs[1] = hash;
+        self.hash ^= hash;
     }
 }
-fn held_karp<'a>(points: &'a Vec<Point>, check_angles: bool) -> (f64, Vec<&'a Point>) {
-    let angle_list = AngleOkList::new(points);
-    let poss_paths: HashMap<(usize, Set), (Vec<bool>, Vec<Path>)> = HashMap::new();
-    let mut new_paths: HashMap<(usize, Set), (Vec<bool>, Vec<Path>)> = HashMap::new();
-    for ((p_pt, set), (mut used_list, paths)) in poss_paths {
-        for (i, pt) in points.iter().enumerate() {
-            if used_list[i] {
-                continue;
-            }
-            let mut set = set.clone();
-            set.add(i);
-            let mut min_path = (f64::MAX, &paths[0]);
-            used_list[i] = true;
-            for path in &paths {
-                let last_pts = path.get_last_two();
-                if !angle_list.is_ok(last_pts.0, last_pts.1, i) {
-                    continue;
-                }
-                let len = path.len as f64 + points[last_pts.1].dist_to(pt);
-                if let Some((_, paths)) = new_paths.get_mut(&(last_pts.1, set.clone())) {}
-                if len < min_path.0 {
-                    min_path = (len, path);
-                }
-            }
-            // if let Some(_) = new_paths.get(&(last_pts.1, set)) {}
-        }
-    }
-    todo!()
-}
+// fn held_karp<'a>(points: &'a Vec<Point>, check_angles: bool) -> (f64, Vec<&'a Point>) {
+//     let angle_list = AngleOkList::new(points);
+//     let poss_paths: HashMap<(usize, Set), (Vec<bool>, Vec<Path>)> = HashMap::new();
+//     let mut new_paths: HashMap<(usize, Set), (Vec<bool>, Vec<Path>)> = HashMap::new();
+//     for ((p_pt, set), (mut used_list, paths)) in poss_paths {
+//         for (i, pt) in points.iter().enumerate() {
+//             if used_list[i] {
+//                 continue;
+//             }
+//             let mut set = set.clone();
+//             set.add(i);
+//             let mut min_path = (f64::MAX, &paths[0]);
+//             used_list[i] = true;
+//             for path in &paths {
+//                 let last_pts = path.get_last_two();
+//                 if !angle_list.is_ok(last_pts.0, last_pts.1, i) {
+//                     continue;
+//                 }
+//                 let len = path.len as f64 + points[last_pts.1].dist_to(pt);
+//                 if let Some((_, paths)) = new_paths.get_mut(&(last_pts.1, set.clone())) {}
+//                 if len < min_path.0 {
+//                     min_path = (len, path);
+//                 }
+//             }
+//             // if let Some(_) = new_paths.get(&(last_pts.1, set)) {}
+//         }
+//     }
+//     todo!()
+// }
 #[derive(Clone, Debug)]
 struct CostList {
     data: Vec<Option<f64>>,
@@ -282,135 +303,270 @@ impl CostList {
         let cost = move_cost + reduce_cost;
         (cost, matrix)
     }*/
+    fn find_mins(&self, n: usize) -> (f64, f64) {
+        let mut first = f64::MAX;
+        let mut second = f64::MAX;
+        for x in 0..self.size {
+            if let Some(v) = self.get(x, n) {
+                if v < &first {
+                    second = first;
+                    first = *v;
+                } else if v < &second {
+                    second = *v;
+                }
+            }
+        }
+        (first, second)
+    }
+    fn find_min(&self, n: usize) -> f64 {
+        (0..self.size)
+            .filter_map(|i| self.get(i, n).clone())
+            .fold(f64::MAX, f64::min)
+    }
 }
-// #[derive(PartialEq)]
-#[derive(Debug)]
-struct Branch {
+// // #[derive(PartialEq)]
+// #[derive(Debug)]
+// struct Branch {
+//     cost: f64,
+//     // free_pts: Vec<usize>,
+//     path: Vec<usize>,
+// }
+// impl Branch {
+//     fn new(path: ) -> Self {}
+//     // fn calc_lower_bound(&self, costs: &CostList) -> f64 {
+//     //     let mut cost = self.path_cost;
+//     //     /*for pt in &self.free_pts {
+//     //         let mut min = f64::MAX;
+//     //         for other in 0..costs.size {
+//     //             if let Some(dist) = costs.get(*pt, other) {
+//     //                 if dist < &min {
+//     //                     min = *dist;
+//     //                 }
+//     //             }
+//     //         }
+//     //         cost += min;
+//     //     }*/
+//     //     // for (i, pt) in self.free_pts.iter().enumerate() {
+//     //     //     if pt == &changed_pt {
+//     //     //         let min = f64::MAX{
+
+//     //     //         }
+//     //     //     }
+//     //     // }
+//     //     cost
+//     // }
+//     fn branch(&self, dest: usize, costs: &CostList) -> Branch {
+//         let last_pt = self.path.pts.last().unwrap();
+//         let mut cost = self.cost;
+//         let free_pts = self.free_pts.clone();
+//         let path = self.path.add(dest);
+//         let dist = costs.get(*last_pt, dest).unwrap();
+//         Branch {
+//             cost,
+//             free_pts,
+//             path,
+//             path_cost: self.path_cost + dist,
+//             min_paths: todo!(),
+//         }
+//     }
+//     fn explore(&self, costs: &CostList, upper_bound: &mut f64) -> Option<Path> {
+//         let last_pt = if let Some(pt) = self.path.pts.last() {
+//             pt
+//         } else {
+//             println!("returning None...");
+//             panic!("");
+//             //done
+//             return None;
+//         };
+//         let mut branches = self
+//             .free_pts
+//             .iter()
+//             .enumerate()
+//             .map(|(i, dest)| {
+//                 // let (mut cost, matrix) = self.matrix.add_path(*last_pt, *dest);
+//                 // cost += self.cost;
+//                 let mut free_pts = self.free_pts.clone();
+//                 free_pts.swap_remove(i);
+//                 let path = self.path.add(*dest);
+//                 let dist = costs.get(*last_pt, *dest).unwrap();
+//                 let mut b = Branch {
+//                     cost: 0.0,
+//                     free_pts,
+//                     path,
+//                     path_cost: self.path_cost + dist,
+//                     min_paths: self.min_paths.clone(),
+//                 };
+//                 let cost = b.calc_lower_bound(costs, *dest);
+//                 b.cost = cost;
+//                 b
+//             })
+//             .collect::<Vec<_>>();
+//         //https://doc.rust-lang.org/std/vec/struct.Vec.html#method.sort_by
+//         branches.sort_by(|a, b| a.cost.partial_cmp(&b.cost).unwrap());
+//         let mut min_path = None;
+//         // println!("branches: ");
+//         let mut prev_cost = branches[0].cost;
+//         for b in branches {
+//             if b.cost < prev_cost {
+//                 panic!("häh");
+//             }
+//             prev_cost = b.cost;
+//             // println!("{}", b.cost);
+//             if b.cost > *upper_bound {
+//                 break;
+//             }
+//             if b.free_pts.is_empty() {
+//                 *upper_bound = b.cost;
+//                 if b.cost == 0.0 {
+//                     panic!("weirf, {:#?}", b);
+//                 }
+//                 // println!(
+//                 //     "returning path, self cost: {}, self: {:#?}, costs: {}",
+//                 //     b.calc_lower_bound(costs),
+//                 //     b,
+//                 //     costs
+//                 // );
+//                 min_path = Some(b.path);
+//             } else {
+//                 let result = b.explore(costs, upper_bound);
+//                 if result.is_some() {
+//                     min_path = result;
+//                 }
+//             };
+//         }
+
+//         if min_path.is_none() && upper_bound == &f64::MAX {
+//             panic!("error, returned");
+//         }
+
+//         min_path
+//     }
+// }
+fn calc_lower_bound(costs: &CostList) -> f64 {
+    let sum = (0..costs.size).fold(0.0, |acc, b| {
+        let (first, second) = costs.find_mins(b);
+        acc + first + second
+    });
+    sum / 2.0
+}
+fn calc_new_lower(prev_cost: f64, costs: &CostList, step: (usize, usize), path_len: usize) -> f64 {
+    let prev_ideal_cost = if path_len == 1 {
+        costs.find_mins(step.0).0
+    } else {
+        costs.find_mins(step.0).1
+    };
+    prev_cost + costs.get(step.0, step.1).unwrap()
+        - (prev_ideal_cost + costs.find_min(step.1)) / 2.0
+}
+fn explore_branch(
     cost: f64,
-    free_pts: Vec<usize>,
-    path: Path,
-}
-impl Branch {
-    fn calc_lower_bound(&self, costs: &CostList) -> f64 {
-        let mut cost = 0.0;
-        let mut p_pt = &self.path.pts[0];
-        for pt in self.path.pts.iter().skip(1) {
-            if let Some(dist) = costs.get(*p_pt, *pt) {
-                cost += dist;
-            }
-            p_pt = pt;
-        }
-        for pt in &self.free_pts {
-            let mut min = f64::MAX;
-            for other in 0..costs.size {
-                if let Some(dist) = costs.get(*pt, other) {
-                    if dist < &min {
-                        min = *dist;
-                    }
-                }
-            }
-            cost += min;
-        }
-        cost
-    }
-    fn explore(&self, costs: &CostList, upper_bound: &mut f64) -> Option<Path> {
-        let last_pt = if let Some(pt) = self.path.pts.last() {
-            pt
-        } else {
-            println!("returning None...");
-            panic!("");
-            //done
-            return None;
-        };
-        let mut branches = self
-            .free_pts
-            .iter()
-            .enumerate()
-            .map(|(i, dest)| {
-                // let (mut cost, matrix) = self.matrix.add_path(*last_pt, *dest);
-                // cost += self.cost;
-                let mut free_pts = self.free_pts.clone();
-                free_pts.swap_remove(i);
-                let path = self.path.add(*dest);
-                let mut b = Branch {
-                    cost: 0.0,
-                    free_pts,
-                    path,
-                };
-                let cost = b.calc_lower_bound(costs);
-                b.cost = cost;
-                b
-            })
-            .collect::<Vec<_>>();
-        //https://doc.rust-lang.org/std/vec/struct.Vec.html#method.sort_by
-        branches.sort_by(|a, b| a.cost.partial_cmp(&b.cost).unwrap());
-        let mut min_path = None;
-        // println!("branches: ");
-        let mut prev_cost = branches[0].cost;
-        for b in branches {
-            if b.cost < prev_cost {
-                panic!("häh");
-            }
-            prev_cost = b.cost;
-            // println!("{}", b.cost);
-            if b.cost > *upper_bound {
-                break;
-            }
-            if b.free_pts.is_empty() {
-                *upper_bound = b.cost;
-                if b.cost == 0.0 {
-                    panic!("weirf, {:#?}", b);
-                }
-                // println!(
-                //     "returning path, self cost: {}, self: {:#?}, costs: {}",
-                //     b.calc_lower_bound(costs),
-                //     b,
-                //     costs
-                // );
-                min_path = Some(b.path);
+    costs: &CostList,
+    path: &mut Vec<usize>,
+    free_pts: &mut Vec<usize>,
+    upper_bound: &mut f64,
+    angle_list: &AngleOkList,
+) -> Option<Vec<usize>> {
+    let path_len = path.len();
+    let prev_pt = *path.last().unwrap();
+    let mut min_path = None;
+    let mut nexts = free_pts
+        .iter()
+        .filter_map(|pt| {
+            if path.len() > 1 && !angle_list.is_ok(path[path_len - 2], prev_pt, *pt) {
+                None
             } else {
-                let result = b.explore(costs, upper_bound);
-                if result.is_some() {
-                    min_path = result;
+                Some(calc_new_lower(cost, costs, (prev_pt, *pt), path.len()))
+            }
+        })
+        .enumerate()
+        .collect::<Vec<_>>();
+    nexts.sort_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap());
+    for (i, new_cost) in nexts {
+        let pt = free_pts.swap_remove(i);
+        // let new_cost = calc_new_lower(cost, costs, (prev_pt, pt), path.len());
+        if new_cost < *upper_bound {
+            path.push(pt);
+            if free_pts.is_empty() {
+                min_path = Some(path.clone());
+                *upper_bound = new_cost;
+                println!("new upper bound: {}", upper_bound);
+            } else {
+                if let Some(result) =
+                    explore_branch(new_cost, costs, path, free_pts, upper_bound, &angle_list)
+                {
+                    min_path = Some(result);
                 }
-            };
+            }
+            path.pop();
         }
-
-        if min_path.is_none() && upper_bound == &f64::MAX {
-            panic!("error, returned");
+        //reverse remove_swap:
+        if i < free_pts.len() {
+            let last = free_pts[i];
+            free_pts[i] = pt;
+            free_pts.push(last);
+        } else {
+            free_pts.push(pt);
         }
-
-        min_path
     }
+    min_path
 }
 fn branch_and_bound<'a>(points: &'a Vec<Point>) -> Option<(f64, Vec<&'a Point>)> {
-    let free_pts = (0..points.len()).collect::<Vec<_>>();
-    let mut min_len = f64::MAX;
-    let mut path = None;
-    let mut matrix = CostList::new(points);
-    // let cost = matrix.reduce();
-    for i in 0..points.len() {
-        let mut free_pts = free_pts.clone();
-        free_pts.swap_remove(i);
-        let mut root = Branch {
-            cost: 0.0,
-            free_pts,
-            path: Path {
-                pts: vec![i],
-                len: 1,
-            },
-        };
-        let cost = root.calc_lower_bound(&matrix);
-        root.cost = cost;
-        // println!("start, matrix: {}", root.matrix);
-        if let Some(result) = root.explore(&matrix, &mut min_len) {
-            path = Some(result.pts.iter().map(|i| &points[*i]).collect());
-        } else if path.is_none() {
-            panic!("error for pt nr. {}, upper: {min_len}", i);
+    let dists = CostList::new(points);
+    let cost = calc_lower_bound(&dists);
+    let mut upper_bound = f64::MAX;
+    let mut min_path = None;
+    let angle_list = AngleOkList::new(points);
+    for start_pt in 0..1
+    /*points.len()*/
+    {
+        let mut path = vec![start_pt];
+        let mut free_pts = (0..points.len()).collect::<Vec<_>>();
+        free_pts.remove(start_pt);
+        if let Some(mut result) = explore_branch(
+            cost,
+            &dists,
+            &mut path,
+            &mut free_pts,
+            &mut upper_bound,
+            &angle_list,
+        ) {
+            result.push(start_pt);
+            min_path = Some(result);
         }
     }
-    Some((min_len, path?))
+    let path = min_path?.into_iter().map(|i| &points[i]).collect();
+    Some((upper_bound, path))
 }
+// fn branch_and_bound<'a>(points: &'a Vec<Point>) -> Option<(f64, Vec<&'a Point>)> {
+//     let free_pts = (0..points.len()).collect::<Vec<_>>();
+//     let mut min_len = f64::MAX;
+//     let mut path = None;
+//     let mut matrix = CostList::new(points);
+//     // let cost = matrix.reduce();
+//     for i in 0..points.len() {
+//         let mut free_pts = free_pts.clone();
+//         free_pts.swap_remove(i);
+//         let mut root = Branch {
+//             cost: 0.0,
+//             free_pts,
+//             path: Path {
+//                 pts: vec![i],
+//                 len: 1,
+//             },
+//             path_cost: 0.0,
+//             min_paths: vec![],
+//         };
+//         let cost = root.calc_lower_bound(&matrix, i);
+//         root.cost = cost;
+//         // println!("start, matrix: {}", root.matrix);
+//         if let Some(result) = root.explore(&matrix, &mut min_len) {
+//             path = Some(result.pts.iter().map(|i| &points[*i]).collect());
+//         } else if path.is_none() {
+//             panic!("error for pt nr. {}, upper: {min_len}", i);
+//         }
+//     }
+//     Some((min_len, path?))
+// }
 fn draw_path(path: &Vec<&Point>, image: &mut RgbaImage, color: [u8; 4], offset: f64) {
     let mut pts = path.into_iter();
     let mut p_pt = pts.next().unwrap();
@@ -424,20 +580,51 @@ fn draw_path(path: &Vec<&Point>, image: &mut RgbaImage, color: [u8; 4], offset: 
         p_pt = pt;
     }
 }
+fn load_pts(path: &str) -> Vec<Point> {
+    let s = fs::read_to_string(path).unwrap();
+    s.split("\n")
+        .filter_map(|line| -> Option<Point> {
+            if line.is_empty() {
+                None
+            } else {
+                Some(
+                    line.split(' ')
+                        .collect::<Vec<&str>>()
+                        .try_into()
+                        .expect("couldn't parse line"),
+                )
+            }
+        })
+        .collect()
+}
 fn main() {
     let start = Instant::now();
     let size = 1000.0;
     let mut rng = thread_rng();
-    let points = get_points((size, size), 15, &mut rng);
-    // let points = vec![
-    //     Point(100.0, 200.0),
-    //     Point(500.0, 200.0),
-    //     Point(600.0, 300.0),
-    // ];
+    let points = load_pts("data/wenigerkrumm5.txt"); //get_points((size, size), 20, &mut rng);
+                                                     // let points = vec![
+                                                     //     Point(100.0, 200.0),
+                                                     //     Point(500.0, 200.0),
+                                                     //     Point(600.0, 300.0),
+                                                     // ];
     println!("Points: {:#?}", points);
-    println!("path through permutation: ");
-    // let min_path_unchecked = get_shortest_path(&points, false);
-    // println!("old path len: {}", get_len(&min_path_unchecked.1));
+    let do_bruteforce = false;
+    let mut image = RgbaImage::from_fn(size as u32 * 2, size as u32, |_, _| {
+        Rgba([0u8, 0u8, 0u8, 255u8])
+    });
+    if do_bruteforce {
+        println!("path through permutation: ");
+        let min_path_unchecked = get_shortest_path(&points, false);
+
+        println!("old path len: {}", get_len(&min_path_unchecked.1));
+
+        draw_path(
+            &min_path_unchecked.1,
+            &mut image,
+            [255u8, 0u8, 0u8, 255u8],
+            0.0,
+        );
+    }
     // let min_path_checked = get_shortest_path(&points, true);
     println!("path through branch and bound: ");
     let min_path_bnb = branch_and_bound(&points).unwrap();
@@ -446,17 +633,8 @@ fn main() {
         get_len(&min_path_bnb.1),
         min_path_bnb.0
     );
-    // println!("old path len: {}", get_len(&min_path_unchecked.1));
     // println!("min_path: {:?}", min_path);
-    let mut image = RgbaImage::from_fn(size as u32 * 2, size as u32, |_, _| {
-        Rgba([0u8, 0u8, 0u8, 255u8])
-    });
-    // draw_path(
-    // &min_path_unchecked.1,
-    // &mut image,
-    // [255u8, 0u8, 0u8, 255u8],
-    // 0.0,
-    // );
+
     let elapsed = start.elapsed();
     println!("took: {:?}", elapsed);
     draw_path(&min_path_bnb.1, &mut image, [0u8, 0u8, 255u8, 255u8], size);
